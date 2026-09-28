@@ -197,6 +197,7 @@ export const DEFAULT_AI_EXPORT_CONTEXT = {
       'Evaluate prospect relevance using the information available about the prospect and its relationship to the domain.',
       'Use multiple available signals together when determining the recommendation.',
       'Do not invent information that is not present in the JSON.',
+      "Before recommending, read get_approval_feedback and get_order_results. Where the final APR differed from your earlier reco, use the aprRemark to adjust similar recos.",
     ],
     output_format: {
         description:
@@ -206,7 +207,7 @@ export const DEFAULT_AI_EXPORT_CONTEXT = {
             {
               domainId: 18314,
               domain: "dallemini.ai",
-              claudeReco: 1200,
+              reco: 1200,
               reasoning: "short why",
             },
           ],
@@ -214,7 +215,7 @@ export const DEFAULT_AI_EXPORT_CONTEXT = {
         field_meanings: {
           domainId: "The numeric id from the Reco Hub row (required for saving later).",
           domain: "The domain name string.",
-          claudeReco: "Your recommended acquisition bid as an integer (USD).",
+          reco: "Your recommended acquisition bid as an integer (USD).",
           reasoning: "One or two short sentences explaining the main reasons.",
         },
       },
