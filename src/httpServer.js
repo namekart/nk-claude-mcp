@@ -1,10 +1,14 @@
 /**
- * Streamable HTTP MCP (stateless) — Coolify / remote Claude Desktop.
+ * Stateful Streamable HTTP MCP — Coolify / remote Claude Desktop.
  * Protect with MCP_AUTH_TOKEN Bearer when set (required in production).
  */
+import { randomUUID } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { createNkClaudeServer, TOOL_NAMES } from "./createServer.js";
+
+const sessions = new Map();
 
 function unauthorized(res) {
   res.status(401).json({
@@ -36,17 +40,38 @@ function checkAuth(req, res) {
 async function handleMcpPost(req, res) {
   if (!checkAuth(req, res)) return;
 
-  const server = createNkClaudeServer();
   try {
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-    });
-    await server.connect(transport);
-    await transport.handleRequest(req, res, req.body);
-    res.on("close", () => {
-      transport.close().catch(() => {});
-      server.close().catch(() => {});
-    });
+    const sessionId = req.headers["mcp-session-id"];
+    let session = sessionId ? sessions.get(sessionId) : undefined;
+
+    if (!session && !sessionId && isInitializeRequest(req.body)) {
+      const server = createNkClaudeServer();
+      let transport;
+      transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (id) => {
+          sessions.set(id, { transport, server });
+        },
+      });
+      transport.onclose = () => {
+        const id = transport.sessionId;
+        if (id) sessions.delete(id);
+        server.close().catch(() => {});
+      };
+      await server.connect(transport);
+      session = { transport, server };
+    }
+
+    if (!session) {
+      res.status(400).json({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: "Invalid or missing MCP session" },
+        id: null,
+      });
+      return;
+    }
+
+    await session.transport.handleRequest(req, res, req.body);
   } catch (error) {
     process.stderr.write(
       `[nk-claude-mcp] HTTP MCP error: ${error instanceof Error ? error.message : String(error)}\n`
@@ -61,12 +86,34 @@ async function handleMcpPost(req, res) {
   }
 }
 
-function methodNotAllowed(res) {
-  res.status(405).json({
-    jsonrpc: "2.0",
-    error: { code: -32000, message: "Method not allowed." },
-    id: null,
-  });
+async function handleSessionRequest(req, res) {
+  if (!checkAuth(req, res)) return;
+
+  const sessionId = req.headers["mcp-session-id"];
+  const session = sessionId ? sessions.get(sessionId) : undefined;
+  if (!session) {
+    res.status(400).json({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Invalid or missing MCP session" },
+      id: null,
+    });
+    return;
+  }
+
+  try {
+    await session.transport.handleRequest(req, res);
+  } catch (error) {
+    process.stderr.write(
+      `[nk-claude-mcp] HTTP MCP session error: ${error instanceof Error ? error.message : String(error)}\n`
+    );
+    if (!res.headersSent) {
+      res.status(500).json({
+        jsonrpc: "2.0",
+        error: { code: -32603, message: "Internal server error" },
+        id: null,
+      });
+    }
+  }
 }
 
 export async function startHttpServer() {
@@ -84,8 +131,8 @@ export async function startHttpServer() {
   });
 
   app.post("/mcp", handleMcpPost);
-  app.get("/mcp", (_req, res) => methodNotAllowed(res));
-  app.delete("/mcp", (_req, res) => methodNotAllowed(res));
+  app.get("/mcp", handleSessionRequest);
+  app.delete("/mcp", handleSessionRequest);
 
   await new Promise((resolve, reject) => {
     const server = app.listen(port, host, (err) => {
